@@ -50,7 +50,7 @@ module Toodeloo
         # Explicitly exit so busy Processor threads can't block
         # process shutdown.
         logger&.info { log_messages[:exiting] }
-        exit(0)
+        exit(exit_status)
       end
     end
 
@@ -76,6 +76,16 @@ module Toodeloo
     }
     def log_messages
       @log_messages ||= DEFAULT_LOG_MESSAGES.dup
+    end
+
+    # Set the status code used when exiting. Most useful to use in an error handler.
+    # @see Kernel::exit
+    def exit_status=(value)
+      @exit_status = value
+    end
+
+    def exit_status
+      @exit_status || true
     end
 
     protected
