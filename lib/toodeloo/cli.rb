@@ -58,6 +58,11 @@ module Toodeloo
       Process.kill(sig, Process.pid)
     end
 
+    def stop!
+      stop
+      kill
+    end
+
     def stopped?
       @done
     end
