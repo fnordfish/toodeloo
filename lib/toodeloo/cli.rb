@@ -4,12 +4,18 @@ module Toodeloo
   class Cli
     attr_reader :signal_handlers, :error_handlers, :logger
 
-    def initialize(signal_handlers: {}, error_handlers: [], kill_on_error: true, logger: nil)
+    # @param signal_handlers: {String => Proc} [Hash] Uppercase signal names as String mapping to anything call-able which receives this instance as argument.
+    # @param error_handlers: DEFAULT_ERROR_HANDLERS [Array] Anything call-able which receives this instance as first argument and the raised exception as second argument.
+    # @param kill_on_error: true [Boolean] Whether to shut down the current process after all error handlers have been run.
+    # @param logger: ::Logger [Logger|nil] A custom Logger to log life-cycle informations/warning to. Set to `nil` to disable logging. Default to log to STDOUT with log-level :debug
+    #
+    # @return [type] [description]
+    def initialize(signal_handlers: {}, error_handlers: DEFAULT_ERROR_HANDLERS, kill_on_error: true, logger: ::Logger.new(STDOUT, level: :debug))
       @signals = DEFAULT_SIGNAL_HANDLERS.keys | signal_handlers.keys.map { |k| k.to_s.upcase }
       @signal_handlers = signal_handlers
-      @error_handlers = DEFAULT_ERROR_HANDLERS + error_handlers
+      @error_handlers = DEFAULT_ERROR_HANDLERS
       @error_handlers << KILL_ON_ERROR_HANDLER if kill_on_error
-      @logger = logger || ::Logger.new(STDOUT, level: :debug)
+      @logger = logger
       @done = false
       @thread = nil
     end
@@ -38,13 +44,12 @@ module Toodeloo
           signal = readable_io.first[0].gets.strip
           handle_signal(signal)
         end
-        logger.debug "done reading"
       rescue Interrupt
-        logger.info 'Shutting down'
+        logger&.info { log_messages[:shutting_down] }
         stop
         # Explicitly exit so busy Processor threads can't block
         # process shutdown.
-        logger.info "Bye!"
+        logger&.info { log_messages[:exiting] }
         exit(0)
       end
     end
@@ -55,6 +60,17 @@ module Toodeloo
 
     def stopped?
       @done
+    end
+
+    DEFAULT_LOG_MESSAGES = {
+      shutting_down: "Shutting down",
+      exiting: "Bye!",
+      signal_trapped: "Got %{sig} signal",
+      no_signal_handler: "No signal handler for %{sig}",
+      exception_in_handler: "!!! ERROR HANDLER THREW AN ERROR !!!\n%{class}: %{message}\n%{backtrace}"
+    }
+    def log_messages
+      @log_messages ||= DEFAULT_LOG_MESSAGES.dup
     end
 
     protected
@@ -105,7 +121,7 @@ module Toodeloo
       'TERM' => ->(cli) { raise Interrupt }
     }
     def handle_signal(sig)
-      logger.debug "Got #{sig} signal"
+      logger&.debug { sprintf(log_messages[:signal_trapped], sig: sig) }
 
       handler = @signal_handlers[sig]
       if handler
@@ -116,7 +132,7 @@ module Toodeloo
       if handy
         handy.call(self)
       elsif !handler
-        logger.info { "No signal handler for #{sig}" }
+        logger&.info { sprintf(log_messages[:no_signal_handler], sig: sig) }
       end
     end
 
@@ -124,7 +140,8 @@ module Toodeloo
       ->(cli, ex) {
         msg = +"#{ex.class.name}: #{ex.message}"
         msg << "\n" << ex.backtrace.join("\n") unless ex.backtrace.nil?
-        cli.logger.warn(msg)
+        cli.logger&.warn(msg)
+        cli.exit_status = false
       }
     ]
 
@@ -135,9 +152,12 @@ module Toodeloo
         begin
           handler.call(self, ex)
         rescue => ex
-          logger.error "!!! ERROR HANDLER THREW AN ERROR !!!"
-          logger.error ex
-          logger.error ex.backtrace.join("\n") unless ex.backtrace.nil?
+          msg = sprintf(
+            log_messages[:exception_in_handler],
+            class: ex.class.name,
+            message: ex.message,
+            backtrace: ex.backtrace&.join("\n")
+          )
         end
       end
     end
